@@ -32,13 +32,13 @@ if sys.platform.startswith('linux'):
       include_dirs.extend([])
       libraries.extend(['stdc++', 'blas', 'lapack'])
       library_dirs.extend([])
-      extra_compile_args.extend(['-fopenmp'])
+      extra_compile_args.extend(['-std=c++11', '-fopenmp'])
       extra_link_args.extend(['-fopenmp'])
 if sys.platform.startswith('darwin'):
       include_dirs.extend([])
       libraries.extend(['stdc++', 'blas', 'lapack'])
       library_dirs.extend([])
-      extra_compile_args.extend(['-Xpreprocessor', '-fopenmp'])
+      extra_compile_args.extend(['-std=c++11', '-Xpreprocessor', '-fopenmp'])
       extra_link_args.extend(['-lomp'])
 
 extensions = [

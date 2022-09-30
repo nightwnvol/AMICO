@@ -89,6 +89,7 @@ class Evaluation :
         self.set_config('DWI-SNR', None)                # SNR of DWI image: SNR = b0/sigma
         self.set_config('doDirectionalAverage', False)  # To perform the directional average on the signal of each shell
         self.set_config('parallel_jobs', -1)            # Number of jobs to be used in multithread-enabled parts of code
+        self.set_config('DTI_fit_method', 'WLS')        # Fit method of the Diffusion Tensor model
 
     def set_config( self, key, value ) :
         self.CONFIG[ key ] = value
@@ -355,54 +356,56 @@ class Evaluation :
         Call the appropriate fit() method of the actual model used.
         """
 
-        @delayed
-        @wrap_non_picklable_objects
-        def fit_voxel(self, ix, iy, iz, dirs, DTI) :
-            """Perform the fit in a single voxel.
-            """
-            # prepare the signal
-            y = self.niiDWI_img[ix, iy, iz, :].astype(np.float64)
-            y[y < 0] = 0  # [NOTE] this should not happen!
+        # TODO delete this function
+        # @delayed
+        # @wrap_non_picklable_objects
+        # def fit_voxel(self, ix, iy, iz, dirs, DTI) :
+        #     """Perform the fit in a single voxel.
+        #     """
+        #     # prepare the signal
+        #     y = self.niiDWI_img[ix, iy, iz, :].astype(np.float64)
+        #     y[y < 0] = 0  # [NOTE] this should not happen!
 
-            # fitting directions if not
-            if not self.get_config('doDirectionalAverage') and DTI is not None :
-                dirs = DTI.fit( y ).directions[0].reshape(-1, 3)
+        #     # fitting directions if not
+        #     if not self.get_config('doDirectionalAverage') and DTI is not None :
+        #         dirs = DTI.fit( y ).directions[0].reshape(-1, 3)
 
-            # dispatch to the right handler for each model
-            results, dirs, x, A = self.model.fit( y, dirs, self.KERNELS, self.get_config('solver_params'), self.htable)
+        #     # dispatch to the right handler for each model
+        #     results, dirs, x, A = self.model.fit( y, dirs, self.KERNELS, self.get_config('solver_params'), self.htable)
 
-            # compute fitting error
-            if self.get_config('doComputeNRMSE') :
-                y_est = np.dot( A, x )
-                den = np.sum(y**2)
-                NRMSE = np.sqrt( np.sum((y-y_est)**2) / den ) if den > 1e-16 else 0
-            else :
-                NRMSE = 0.0
+        # TODO not implemented yet
+        #     # compute fitting error
+        #     if self.get_config('doComputeNRMSE') :
+        #         y_est = np.dot( A, x )
+        #         den = np.sum(y**2)
+        #         NRMSE = np.sqrt( np.sum((y-y_est)**2) / den ) if den > 1e-16 else 0
+        #     else :
+        #         NRMSE = 0.0
 
-            y_fw_corrected = None
-            if self.get_config('doSaveCorrectedDWI') :
+        #     y_fw_corrected = None
+        #     if self.get_config('doSaveCorrectedDWI') :
 
-                if self.model.name == 'Free-Water' :
-                    n_iso = len(self.model.d_isos)
+        #         if self.model.name == 'Free-Water' :
+        #             n_iso = len(self.model.d_isos)
 
-                    # keep only FW components of the estimate
-                    x[0:x.shape[0]-n_iso] = 0
+        #             # keep only FW components of the estimate
+        #             x[0:x.shape[0]-n_iso] = 0
 
-                    # y_fw_corrected below is the predicted signal by the anisotropic part (no iso part)
-                    y_fw_part = np.dot( A, x )
+        #             # y_fw_corrected below is the predicted signal by the anisotropic part (no iso part)
+        #             y_fw_part = np.dot( A, x )
 
-                    # y is the original signal
-                    y_fw_corrected = y - y_fw_part
-                    y_fw_corrected[ y_fw_corrected < 0 ] = 0 # [NOTE] this should not happen!
+        #             # y is the original signal
+        #             y_fw_corrected = y - y_fw_part
+        #             y_fw_corrected[ y_fw_corrected < 0 ] = 0 # [NOTE] this should not happen!
 
-                    if self.get_config('doNormalizeSignal') and self.scheme.b0_count > 0 :
-                        y_fw_corrected = y_fw_corrected * self.mean_b0s[ix,iy,iz]
+        #             if self.get_config('doNormalizeSignal') and self.scheme.b0_count > 0 :
+        #                 y_fw_corrected = y_fw_corrected * self.mean_b0s[ix,iy,iz]
 
-                    if self.get_config('doKeepb0Intact') and self.scheme.b0_count > 0 :
-                        # put original b0 data back in.
-                        y_fw_corrected[self.scheme.b0_idx] = y[self.scheme.b0_idx]*self.mean_b0s[ix,iy,iz]
+        #             if self.get_config('doKeepb0Intact') and self.scheme.b0_count > 0 :
+        #                 # put original b0 data back in.
+        #                 y_fw_corrected[self.scheme.b0_idx] = y[self.scheme.b0_idx]*self.mean_b0s[ix,iy,iz]
 
-            return results, dirs, NRMSE, y_fw_corrected
+        #     return results, dirs, NRMSE, y_fw_corrected
 
 
         if self.niiDWI is None :
@@ -413,15 +416,15 @@ class Evaluation :
             ERROR( 'Response functions not generated; call "generate_kernels()" and "load_kernels()" first' )
         if self.KERNELS['model'] != self.model.id :
             ERROR( 'Response functions were not created with the same model' )
-        n_jobs = self.get_config( 'parallel_jobs' )
-        if n_jobs == -1 :
-            n_jobs = cpu_count()
-        elif n_jobs == 0 or n_jobs < -1:
+        n_threads = self.get_config( 'parallel_jobs' )
+        if n_threads == -1 :
+            n_threads = cpu_count()
+        elif n_threads == 0 or n_threads < -1:
             ERROR( 'Number of parallel jobs must be positive or -1' )
 
         self.set_config('fit_time', None)
         totVoxels = np.count_nonzero(self.niiMASK_img)
-        LOG( f'\n-> Fitting "{self.model.name}" model to {totVoxels} voxels (using {n_jobs} job{"s" if n_jobs>1 else ""}):' )
+        LOG( f'\n-> Fitting "{self.model.name}" model to {totVoxels} voxels (using {n_threads} thread{"s" if n_threads > 1 else ""}):' )
 
         # setup fitting directions
         peaks_filename = self.get_config('peaks_filename')
@@ -432,7 +435,7 @@ class Evaluation :
                 gtab = gradient_table( np.hstack((0,self.scheme.b[self.scheme.dwi_idx])), np.vstack((np.zeros((1,3)),self.scheme.raw[self.scheme.dwi_idx,:3])) )
             else:
                 gtab = gradient_table( self.scheme.b, self.scheme.raw[:,:3] )
-            DTI = dti.TensorModel( gtab )
+            DTI = dti.TensorModel( gtab, fit_method=self.get_config('DTI_fit_method'))
         else :
             if not isfile( pjoin(self.get_config('DATA_path'), peaks_filename) ):
                 ERROR( 'PEAKS file not found' )
@@ -452,37 +455,36 @@ class Evaluation :
         t = time.time()
 
         ix, iy, iz = np.nonzero(self.niiMASK_img)
-        n_per_thread = np.floor(totVoxels / n_jobs)
-        idx = np.arange(0, totVoxels+1, n_per_thread, dtype=np.int32)
-        idx[-1] = totVoxels
+        y = self.niiDWI_img[ix, iy, iz, :].astype(np.float64)
+        y[y < 0] = 0
 
-        estimates = Parallel(n_jobs=n_jobs)(
-            fit_voxel(self, ix[i], iy[i], iz[i], DIRs[ix[i],iy[i],iz[i],:], DTI)
-            for i in tqdm(range(totVoxels), ncols=70, bar_format='   |{bar}| {percentage:4.1f}%', disable=(get_verbose()<3))
-        )
+        if not self.get_config('doDirectionalAverage') and DTI is not None:
+            dirs = np.squeeze(DTI.fit(y).directions)
+
+        estimates = self.model.fit(y, dirs, self.KERNELS, self.get_config('solver_params'), self.htable)
 
         self.set_config('fit_time', time.time()-t)
         LOG( '   [ %s ]' % ( time.strftime("%Hh %Mm %Ss", time.gmtime(self.get_config('fit_time')) ) ) )
 
         # store results
-        self.RESULTS = {}
-
         for i in range(totVoxels) :
-            MAPs[ix[i],iy[i],iz[i],:] = estimates[i][0]
-            DIRs[ix[i],iy[i],iz[i],:] = estimates[i][1]
+            MAPs[ix[i],iy[i],iz[i],:] = estimates[i]
+            DIRs[ix[i],iy[i],iz[i],:] = dirs[i]
+        self.RESULTS = {}
         self.RESULTS['DIRs']  = DIRs
         self.RESULTS['MAPs']  = MAPs
 
+        # TODO not implemented yet
         if self.get_config('doComputeNRMSE') :
             NRMSE = np.zeros( [self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2]], dtype=np.float32 )
             for i in range(totVoxels) :
-                NRMSE[ix[i],iy[i],iz[i]] = estimates[i][2]
+                NRMSE[ix[i],iy[i],iz[i]] = estimates[i][2] # TODO handle this
             self.RESULTS['NRMSE'] = NRMSE
 
         if self.get_config('doSaveCorrectedDWI') :
             DWI_corrected = np.zeros(self.niiDWI.shape, dtype=np.float32)
             for i in range(totVoxels):
-                DWI_corrected[ix[i],iy[i],iz[i],:] = estimates[i][3]
+                DWI_corrected[ix[i],iy[i],iz[i],:] = estimates[i][3] # TODO handle this
             self.RESULTS['DWI_corrected'] = DWI_corrected
 
 

@@ -62,6 +62,7 @@ setup(name=info.NAME,
       url=info.URL,
       license=info.LICENSE,
       packages=find_packages(),
+      setup_requires=['Cython>=0.29', 'numpy>=1.12'],
       install_requires=['packaging', 'wheel', 'numpy>=1.12', 'scipy>=1.0', 'dipy>=1.0', 'spams>=2.6.5.2', 'tqdm>=4.56.0', 'joblib>=1.0.1', 'Cython>=0.29'],
       package_data={'': ['*.bin', 'directions/*.bin', '*.dll']}, # NOTE only for tests
       ext_modules=cythonize(extensions))

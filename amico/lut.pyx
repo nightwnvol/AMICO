@@ -1,3 +1,6 @@
+# distutils: language=c++
+# cython: language_level=3
+
 from __future__ import absolute_import, division, print_function
 
 import numpy as np

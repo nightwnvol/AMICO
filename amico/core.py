@@ -5,7 +5,7 @@ import time
 import glob
 import sys
 from os import makedirs, remove
-from os.path import exists, join as pjoin, isfile, isdir
+from os.path import exists, join as pjoin, isfile
 
 import nibabel
 import pickle
@@ -16,9 +16,9 @@ import amico.models
 from amico.lut import is_valid, valid_dirs
 from dipy.core.gradients import gradient_table
 import dipy.reconst.dti as dti
-from amico.util import PRINT, LOG, NOTE, WARNING, ERROR, get_verbose
+from amico.util import PRINT, LOG, WARNING, ERROR, get_verbose, Loader
 from pkg_resources import get_distribution
-from joblib import Parallel, delayed, cpu_count, wrap_non_picklable_objects
+from joblib import cpu_count
 from tqdm import tqdm
 
 
@@ -67,6 +67,9 @@ class Evaluation :
         self.niiMASK_img = None
         self.model       = None # set by "set_model" method
         self.KERNELS     = None # set by "load_kernels" method
+        self.y           = None # set by "fit" method
+        self.DIRs        = None # set by "fit" method
+        self.n_threads   = None # set by "fit" method
         self.RESULTS     = None # set by "fit" method
         self.mean_b0s    = None # set by "load_data" method
         self.htable      = None
@@ -89,6 +92,7 @@ class Evaluation :
         self.set_config('DWI-SNR', None)                # SNR of DWI image: SNR = b0/sigma
         self.set_config('doDirectionalAverage', False)  # To perform the directional average on the signal of each shell
         self.set_config('parallel_jobs', -1)            # Number of jobs to be used in multithread-enabled parts of code
+        self.set_config('DTI_fit_method', 'WLS')        # Fit method for the Diffusion Tensor model (dipy). Default is WSL.
 
     def set_config( self, key, value ) :
         self.CONFIG[ key ] = value
@@ -351,59 +355,9 @@ class Evaluation :
 
 
     def fit( self ) :
-        """Fit the model to the data iterating over all voxels (in the mask) one after the other.
+        """Fit the model to the data.
         Call the appropriate fit() method of the actual model used.
         """
-
-        @delayed
-        @wrap_non_picklable_objects
-        def fit_voxel(self, ix, iy, iz, dirs, DTI) :
-            """Perform the fit in a single voxel.
-            """
-            # prepare the signal
-            y = self.niiDWI_img[ix, iy, iz, :].astype(np.float64)
-            y[y < 0] = 0  # [NOTE] this should not happen!
-
-            # fitting directions if not
-            if not self.get_config('doDirectionalAverage') and DTI is not None :
-                dirs = DTI.fit( y ).directions[0].reshape(-1, 3)
-
-            # dispatch to the right handler for each model
-            results, dirs, x, A = self.model.fit( y, dirs, self.KERNELS, self.get_config('solver_params'), self.htable)
-
-            # compute fitting error
-            if self.get_config('doComputeNRMSE') :
-                y_est = np.dot( A, x )
-                den = np.sum(y**2)
-                NRMSE = np.sqrt( np.sum((y-y_est)**2) / den ) if den > 1e-16 else 0
-            else :
-                NRMSE = 0.0
-
-            y_fw_corrected = None
-            if self.get_config('doSaveCorrectedDWI') :
-
-                if self.model.name == 'Free-Water' :
-                    n_iso = len(self.model.d_isos)
-
-                    # keep only FW components of the estimate
-                    x[0:x.shape[0]-n_iso] = 0
-
-                    # y_fw_corrected below is the predicted signal by the anisotropic part (no iso part)
-                    y_fw_part = np.dot( A, x )
-
-                    # y is the original signal
-                    y_fw_corrected = y - y_fw_part
-                    y_fw_corrected[ y_fw_corrected < 0 ] = 0 # [NOTE] this should not happen!
-
-                    if self.get_config('doNormalizeSignal') and self.scheme.b0_count > 0 :
-                        y_fw_corrected = y_fw_corrected * self.mean_b0s[ix,iy,iz]
-
-                    if self.get_config('doKeepb0Intact') and self.scheme.b0_count > 0 :
-                        # put original b0 data back in.
-                        y_fw_corrected[self.scheme.b0_idx] = y[self.scheme.b0_idx]*self.mean_b0s[ix,iy,iz]
-
-            return results, dirs, NRMSE, y_fw_corrected
-
 
         if self.niiDWI is None :
             ERROR( 'Data not loaded; call "load_data()" first' )
@@ -413,77 +367,72 @@ class Evaluation :
             ERROR( 'Response functions not generated; call "generate_kernels()" and "load_kernels()" first' )
         if self.KERNELS['model'] != self.model.id :
             ERROR( 'Response functions were not created with the same model' )
-        n_jobs = self.get_config( 'parallel_jobs' )
-        if n_jobs == -1 :
-            n_jobs = cpu_count()
-        elif n_jobs == 0 or n_jobs < -1:
+        self.n_threads = self.get_config('parallel_jobs')
+        if self.n_threads == -1 :
+            self.n_threads = cpu_count()
+        elif self.n_threads == 0 or self.n_threads < -1:
             ERROR( 'Number of parallel jobs must be positive or -1' )
 
         self.set_config('fit_time', None)
         totVoxels = np.count_nonzero(self.niiMASK_img)
-        LOG( f'\n-> Fitting "{self.model.name}" model to {totVoxels} voxels (using {n_jobs} job{"s" if n_jobs>1 else ""}):' )
+        LOG( f'\n-> Fitting "{self.model.name}" model to {totVoxels} voxels (using {self.n_threads} thread{"s" if self.n_threads > 1 else ""}):' )
 
         # setup fitting directions
         peaks_filename = self.get_config('peaks_filename')
         if peaks_filename is None :
-            DIRs = np.zeros( [self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2], 3], dtype=np.float32 )
-            nDIR = 1
             if self.get_config('doMergeB0'):
                 gtab = gradient_table( np.hstack((0,self.scheme.b[self.scheme.dwi_idx])), np.vstack((np.zeros((1,3)),self.scheme.raw[self.scheme.dwi_idx,:3])) )
             else:
                 gtab = gradient_table( self.scheme.b, self.scheme.raw[:,:3] )
-            DTI = dti.TensorModel( gtab )
+            DTI = dti.TensorModel( gtab, fit_method=self.get_config('DTI_fit_method'))
         else :
             if not isfile( pjoin(self.get_config('DATA_path'), peaks_filename) ):
                 ERROR( 'PEAKS file not found' )
             niiPEAKS = nibabel.load( pjoin( self.get_config('DATA_path'), peaks_filename) )
-            DIRs = niiPEAKS.get_data().astype(np.float32)
-            nDIR = np.floor( DIRs.shape[3]/3 )
-            PRINT('\t* peaks dim = %d x %d x %d x %d' % DIRs.shape[:4])
-            if DIRs.shape[:3] != self.niiMASK_img.shape[:3] :
+            self.DIRs = niiPEAKS.get_data().astype(np.float32)
+            PRINT('\t* peaks dim = %d x %d x %d x %d' % self.DIRs.shape[:4])
+            if self.DIRs.shape[:3] != self.niiMASK_img.shape[:3] :
                 ERROR( 'PEAKS geometry does not match with DWI data' )
             DTI = None
-
-        # setup other output files
-        MAPs = np.zeros( [self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2], len(self.model.maps_name)], dtype=np.float32 )
 
         # fit the model to the data
         # =========================
         t = time.time()
-
-        ix, iy, iz = np.nonzero(self.niiMASK_img)
-        n_per_thread = np.floor(totVoxels / n_jobs)
-        idx = np.arange(0, totVoxels+1, n_per_thread, dtype=np.int32)
-        idx[-1] = totVoxels
-
-        estimates = Parallel(n_jobs=n_jobs)(
-            fit_voxel(self, ix[i], iy[i], iz[i], DIRs[ix[i],iy[i],iz[i],:], DTI)
-            for i in tqdm(range(totVoxels), ncols=70, bar_format='   |{bar}| {percentage:4.1f}%', disable=(get_verbose()<3))
-        )
-
+        # NOTE binary mask indexing
+        self.y = self.niiDWI_img[self.niiMASK_img==1, :].astype(np.double)
+        self.y[self.y < 0] = 0        
+        # precompute directions
+        if not self.get_config('doDirectionalAverage') and DTI is not None:
+            with Loader(message='Precomputing directions ({0})'.format(self.get_config('DTI_fit_method')), verbose=get_verbose()):
+                self.DIRs = np.squeeze(DTI.fit(self.y).directions)
+        # call the fit() method of the actual model
+        with Loader(message='Fitting the model', verbose=get_verbose()):
+            results = self.model.fit(self)
         self.set_config('fit_time', time.time()-t)
         LOG( '   [ %s ]' % ( time.strftime("%Hh %Mm %Ss", time.gmtime(self.get_config('fit_time')) ) ) )
+        # =========================
 
         # store results
         self.RESULTS = {}
-
-        for i in range(totVoxels) :
-            MAPs[ix[i],iy[i],iz[i],:] = estimates[i][0]
-            DIRs[ix[i],iy[i],iz[i],:] = estimates[i][1]
-        self.RESULTS['DIRs']  = DIRs
-        self.RESULTS['MAPs']  = MAPs
-
+        # estimates (maps)
+        self.RESULTS['MAPs']  = np.zeros([self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2], len(self.model.maps_name)], dtype=np.float32)
+        self.RESULTS['MAPs'][self.niiMASK_img==1, :] = results[0]
+        # directions
+        self.RESULTS['DIRs']  = np.zeros([self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2], 3], dtype=np.float32)
+        self.RESULTS['DIRs'][self.niiMASK_img==1, :] = self.DIRs
+        # nrmse
         if self.get_config('doComputeNRMSE') :
-            NRMSE = np.zeros( [self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2]], dtype=np.float32 )
-            for i in range(totVoxels) :
-                NRMSE[ix[i],iy[i],iz[i]] = estimates[i][2]
-            self.RESULTS['NRMSE'] = NRMSE
-
+            self.RESULTS['NRMSE'] = np.zeros([self.get_config('dim')[0], self.get_config('dim')[1], self.get_config('dim')[2]], dtype=np.float32)
+            self.RESULTS['NRMSE'][self.niiMASK_img==1] = results[1]
+        # corrected DWI
         if self.get_config('doSaveCorrectedDWI') :
-            DWI_corrected = np.zeros(self.niiDWI.shape, dtype=np.float32)
-            for i in range(totVoxels):
-                DWI_corrected[ix[i],iy[i],iz[i],:] = estimates[i][3]
-            self.RESULTS['DWI_corrected'] = DWI_corrected
+            y_corrected = results[2]
+            if self.get_config('doNormalizeSignal') and self.scheme.b0_count > 0:
+                y_corrected = y_corrected * np.reshape(self.mean_b0s[self.niiMASK_img==1], (-1, 1))
+            if self.get_config('doKeepb0Intact') and self.scheme.b0_count > 0:
+                y_corrected[:, self.scheme.b0_idx] = self.y[:, self.scheme.b0_idx] * np.reshape(self.mean_b0s[self.niiMASK_img==1], (-1, 1))
+            self.RESULTS['DWI_corrected'] = np.zeros(self.niiDWI.shape, dtype=np.float32)
+            self.RESULTS['DWI_corrected'][self.niiMASK_img==1, :] = y_corrected
 
 
     def save_results( self, path_suffix = None, save_dir_avg = False ) :

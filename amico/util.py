@@ -2,6 +2,9 @@ from __future__ import absolute_import, division, print_function
 
 import numpy as np
 import os.path
+import itertools
+import threading
+import time
 from sys import exit
 
 __VERBOSE_LEVEL__ = 3
@@ -228,3 +231,61 @@ def sandi2scheme( bvalsFilename, bvecsFilename, Delta_data, smalldel_data, TE_da
     np.savetxt( schemeFilename, np.c_[bvecs.T, G, delta, smalldel, TE], fmt="%.06f", delimiter="\t", header="VERSION: 1", comments='' )
     PRINT("-> Writing scheme file to [ %s ]" % schemeFilename)
     return schemeFilename
+
+class Loader:
+    """
+    A loader-like context manager
+    """
+    def __init__(self, message='Loading', end='[OK]', timeout=0.05, type=1, padding=32, verbose=3):
+        self.message = message
+        self.end = end
+        self.timeout = timeout
+        self.type = type
+        self.padding = padding
+        self.verbose = verbose
+
+        self._n = 0
+        self._m = 0
+
+        if self.verbose == 3:
+            self._steps = []
+            # if self.type == 0:
+            #     self._steps = ['⢿', '⣻', '⣽', '⣾', '⣷', '⣯', '⣟', '⡿']
+            if self.type == 1:
+                self._n = 1
+                self._steps = ['|', '/', '-', '\\']
+            if self.type == 2:
+                self._n = 12
+                self._m = 3
+                for i in range(self._n - self._m + 1 - 2):
+                    self._steps.append('|{0}{1}{2}|'.format(' ' * i, '█' * self._m, ' ' * (self._n - self._m - i - 2)))
+                for i in range(self._m - 1):
+                    self._steps.append('|{0}{1}{2}|'.format('█' * (i + 1), ' ' * (self._n - self._m - 2), '█' * (self._m - i - 1)))
+
+        self._done = False
+        self._thread = threading.Thread(target=self._animate, daemon=True)
+
+    def __enter__(self):
+        self.start()
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.stop()
+
+    def _animate(self):
+        if self.verbose == 3:
+            for step in itertools.cycle(self._steps):
+                if self._done:
+                    break
+                print('\r\t* {0:{2}}{1}'.format(self.message, step, self.padding), end='', flush=True)
+                time.sleep(self.timeout)
+        if self.verbose == 2:
+            print('\r\t* {0}'.format(self.message), end='', flush=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._done = True
+        if self.verbose > 1:
+            print('\r\t  {0}'.format(' ' * (len(self.message) + self._n + self.padding)), end='', flush=True)
+            print('\r\t* {0:{2}}{1}'.format(self.message, self.end, self.padding), flush=True)

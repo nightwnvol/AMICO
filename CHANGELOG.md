@@ -1,6 +1,18 @@
 # Change Log
 All notable changes to AMICO will be documented in this file.
 
+## [1.6.0] - 2022-##-##
+
+### Changed
+- Implement 'fit' method of the models in Cython (models.pyx)
+- Implement the 'dir_to_lut_idx' method in Cython (lut.pyx)
+- Implement multithreading
+
+### Added
+- C++ wrappers for 'nnls' and 'lasso' functions
+- Possibility to choose the fitting method for the Diffusion Tensor model (dipy)
+- Loader-like context manager
+
 ## [1.5.1] - 2022-09-21
 
 ### Fixed

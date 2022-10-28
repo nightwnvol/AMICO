@@ -26,20 +26,20 @@ if sys.platform.startswith('win32'):
       include_dirs.extend(['C:/Users/clori/Desktop/install_spams/OpenBLAS-0.3.20-x64/include']) # NOTE only for tests
       libraries.extend(['libopenblas'])
       library_dirs.extend(['C:/Users/clori/Desktop/install_spams/OpenBLAS-0.3.20-x64/lib']) # NOTE only for tests
-      extra_compile_args.extend(['-std:c11', '-openmp'])
+      extra_compile_args.extend(['-std:c11'])
       extra_link_args.extend([])
 if sys.platform.startswith('linux'):
       include_dirs.extend([])
       libraries.extend(['stdc++', 'blas', 'lapack'])
       library_dirs.extend([])
-      extra_compile_args.extend(['-std=c++11', '-fopenmp'])
-      extra_link_args.extend(['-fopenmp'])
+      extra_compile_args.extend(['-std=c++11'])
+      extra_link_args.extend([])
 if sys.platform.startswith('darwin'):
       include_dirs.extend([])
       libraries.extend(['stdc++', 'blas', 'lapack'])
       library_dirs.extend([])
-      extra_compile_args.extend(['-std=c++11', '-Xpreprocessor', '-fopenmp'])
-      extra_link_args.extend(['-lomp'])
+      extra_compile_args.extend(['-std=c++11'])
+      extra_link_args.extend([])
 
 extensions = [
       Extension(
